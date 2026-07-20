@@ -1,0 +1,17 @@
+.idea/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+.venv/
+venv/
+env/
+
+.env
+.env.*
+
+data/indexes/*
+!data/indexes/.gitkeep
+
+Project_plan.txt
+AGENTS.md
