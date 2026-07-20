@@ -1,0 +1,905 @@
+# Project Title
+
+## Agentic Spreadsheet Intelligence System
+
+**One-line pitch:**
+
+```text
+An AI-powered spreadsheet analyst that preprocesses Excel workbooks into formula dependency graphs, maps raw cell references to business variables, and explains metric calculations and workbook-to-workbook differences.
+```
+
+---
+
+# Final Project Scope
+
+The system will:
+
+```text
+1. Upload one or two Excel workbooks.
+2. Preprocess the full workbook.
+3. Extract formulas, values, sheets, named ranges, merged cells, and labels.
+4. Build a full dependency graph of formula relationships.
+5. Resolve raw cell/range references into business-readable variables.
+6. Let users ask natural-language questions.
+7. Use an LLM planner to call the correct tools.
+8. Explain formula lineage and workbook differences with raw evidence.
+```
+
+
+# System Architecture
+
+```text
+Excel Workbook(s)
+      ↓
+Workbook Preprocessor
+      ↓
+Formula Extractor
+      ↓
+Reference Parser
+      ↓
+Dependency Graph Builder
+      ↓
+Formula Variable Resolver
+      ↓
+Graph + Metadata Store
+      ↓
+User Query
+      ↓
+LLM Query Planner
+      ↓
+Tool Calls
+      ↓
+Explanation Generator
+      ↓
+Final Answer
+```
+
+---
+
+# Phase 1: Workbook Upload and Preprocessing
+
+## Goal
+
+Read the Excel workbook and create a structured internal representation of it.
+
+## Input
+
+```text
+OP26.xlsx
+OP27.xlsx
+```
+
+## Tasks
+
+```text
+1. Load workbook using openpyxl.
+2. Extract sheet names.
+3. Extract used ranges.
+4. Extract cell values.
+5. Extract formulas.
+6. Extract named ranges.
+7. Extract merged cells.
+8. Extract comments.
+9. Extract formatting clues such as fill color.
+10. Store all extracted metadata.
+```
+
+## Output
+
+A workbook index:
+
+```json
+{
+  "workbook_id": "OP27",
+  "sheets": ["Input", "Assumptions", "Revenue"],
+  "formula_cells_count": 4850,
+  "value_cells_count": 12000,
+  "named_ranges_count": 42
+}
+```
+
+## Deliverable
+
+```text
+Workbook index JSON for each uploaded Excel file.
+```
+
+---
+
+# Phase 2: Formula Extraction and Reference Parsing
+
+## Goal
+
+Extract formulas and identify which cells/ranges each formula depends on.
+
+## Example Formula
+
+```excel
+=SUM(Input!B2:B10) * Assumptions!D15 * Pricing!F8
+```
+
+## Parsed References
+
+```text
+Input!B2:B10
+Assumptions!D15
+Pricing!F8
+```
+
+## Tasks
+
+```text
+1. Loop through all formula cells.
+2. Normalize formulas.
+3. Extract same-sheet references.
+4. Extract cross-sheet references.
+5. Extract ranges.
+6. Extract absolute references like $B$2.
+7. Extract sheet names with spaces like 'Input Sheet'!B2:B10.
+8. Store formula → references mapping.
+```
+
+## Output
+
+```json
+{
+  "formula_cell": "Revenue!H22",
+  "formula": "=SUM(Input!B2:B10)*Assumptions!D15*Pricing!F8",
+  "references": [
+    "Input!B2:B10",
+    "Assumptions!D15",
+    "Pricing!F8"
+  ]
+}
+```
+
+## Deliverable
+
+```text
+Formula reference map for each workbook.
+```
+
+---
+
+# Phase 3: Dependency Graph Construction
+
+## Goal
+
+Build a graph showing how cells and ranges flow into formula outputs.
+
+## Graph Direction
+
+```text
+Input / precedent cell → dependent formula cell
+```
+
+Example:
+
+```text
+Input!B2:B10 ─────────┐
+                      ├── Revenue!H22
+Assumptions!D15 ──────┘
+Pricing!F8 ───────────┘
+```
+
+## Tasks
+
+```text
+1. Create a graph using networkx.
+2. Add every formula cell as a node.
+3. Add every referenced cell/range as a node.
+4. Add edges from precedent cells to formula cells.
+5. Store formula text on formula nodes.
+6. Store values and metadata on nodes.
+7. Support upstream tracing.
+8. Support downstream impact tracing.
+```
+
+## Core Graph Functions
+
+```python
+get_upstream_dependencies(cell)
+get_downstream_impacts(cell)
+get_dependency_paths(source, target)
+get_metric_lineage(cell)
+```
+
+## Output
+
+```json
+{
+  "nodes": [
+    "Input!B2:B10",
+    "Assumptions!D15",
+    "Pricing!F8",
+    "Revenue!H22"
+  ],
+  "edges": [
+    ["Input!B2:B10", "Revenue!H22"],
+    ["Assumptions!D15", "Revenue!H22"],
+    ["Pricing!F8", "Revenue!H22"]
+  ]
+}
+```
+
+## Deliverable
+
+```text
+Dependency graph JSON / NetworkX graph file for each workbook.
+```
+
+---
+
+# Phase 4: Formula Variable Resolver
+
+## Goal
+
+Convert raw Excel references into business-readable names.
+
+Example:
+
+```text
+Input!B2:B10
+```
+
+becomes:
+
+```text
+Eligible Patient Population by Country for 2025
+```
+
+## Resolution Strategy
+
+Use a tiered approach.
+
+---
+
+## Tier 1: Named Range Resolver
+
+Use Excel named ranges if available.
+
+Example:
+
+```text
+rng_Compliance_Germany_2028
+```
+
+Resolved as:
+
+```text
+Compliance Rate | Germany | 2028
+```
+
+Confidence: high.
+
+---
+
+## Tier 2: Header-Based Resolver
+
+Use nearby row and column labels.
+
+For:
+
+```text
+Assumptions!D15
+```
+
+Look for:
+
+```text
+Left label: Germany
+Top label: 2028
+Nearby title: Compliance Rate
+```
+
+Resolved as:
+
+```text
+Compliance Rate | Germany | 2028
+```
+
+Confidence: medium-high.
+
+---
+
+## Tier 3: Range Resolver
+
+For:
+
+```text
+Input!B2:B10
+```
+
+Look for:
+
+```text
+Top header: 2025
+Left labels: countries
+Nearby title: Eligible Patient Population
+```
+
+Resolved as:
+
+```text
+Eligible Patient Population by Country for 2025
+```
+
+Confidence: medium-high.
+
+---
+
+## Tier 4: LLM Resolver
+
+Use LLM only when rule-based resolution is uncertain.
+
+Send structured context, not the full sheet.
+
+Example context:
+
+```json
+{
+  "sheet": "Input",
+  "reference": "B2:B10",
+  "formula_using_reference": "Revenue!H22 = SUM(Input!B2:B10)",
+  "range_values_sample": {
+    "B2": 1200,
+    "B3": 900,
+    "B4": 750
+  },
+  "left_headers": {
+    "A2": "Germany",
+    "A3": "France",
+    "A4": "Italy"
+  },
+  "top_headers": {
+    "B1": "2025"
+  },
+  "nearby_titles": [
+    "Eligible Patient Population"
+  ],
+  "named_range": null
+}
+```
+
+Expected LLM output:
+
+```json
+{
+  "resolved_name": "Eligible Patient Population by Country for 2025",
+  "row_dimension": "Country",
+  "column_dimension": "Year",
+  "confidence": 0.91,
+  "evidence": [
+    "Nearby title is Eligible Patient Population",
+    "Left labels are country names",
+    "Column header is 2025"
+  ]
+}
+```
+
+## Deliverable
+
+```text
+Resolved variable map for each workbook.
+```
+
+---
+
+# Phase 5: Metric Resolver
+
+## Goal
+
+Map user language to actual workbook nodes.
+
+Example user query:
+
+```text
+Net Revenue for Germany in 2028
+```
+
+Resolved target:
+
+```text
+Revenue!H22
+```
+
+## Tasks
+
+```text
+1. Search workbook labels for metric name.
+2. Search row headers for dimensions like Germany.
+3. Search column headers for periods like 2028.
+4. Score candidate cells.
+5. Use LLM only if multiple candidates are close.
+6. Return target cell with confidence and evidence.
+```
+
+## Output
+
+```json
+{
+  "target_cell": "Revenue!H22",
+  "resolved_metric": "Net Revenue | Germany | 2028",
+  "confidence": 0.88,
+  "evidence": [
+    "Nearby label contains Net Revenue",
+    "Row label contains Germany",
+    "Column header contains 2028"
+  ]
+}
+```
+
+## Deliverable
+
+```text
+Metric-to-cell resolution tool.
+```
+
+---
+
+# Phase 6: Single-Workbook Question Answering
+
+## Goal
+
+Answer questions about one workbook using the graph.
+
+## Supported Questions
+
+```text
+1. How is Net Revenue calculated?
+2. Which inputs affect Net Revenue?
+3. What does Revenue!H22 depend on?
+4. What outputs are impacted by Compliance Rate?
+```
+
+## Workflow
+
+```text
+User question
+   ↓
+LLM planner identifies intent
+   ↓
+Metric resolver finds target cell
+   ↓
+Graph tool traces lineage
+   ↓
+Variable resolver enriches raw references
+   ↓
+Explanation generator creates answer
+```
+
+## Example Output
+
+```text
+Target metric:
+Net Revenue | Germany | 2028
+
+Raw cell:
+Revenue!H22
+
+Calculation lineage:
+1. Eligible Patient Population feeds Patient Count.
+2. Patient Count is adjusted by Access Rate and Compliance Rate.
+3. Treated Patient Volume is multiplied by List Price.
+4. Rebates are deducted to calculate Net Revenue.
+
+Raw supporting references:
+- Input!B2:B10
+- Assumptions!D15
+- Pricing!F8
+```
+
+## Deliverable
+
+```text
+Chat-based single-workbook explanation flow.
+```
+
+---
+
+# Phase 7: Two-Workbook Comparison
+
+## Goal
+
+Compare two workbook versions and explain why a selected metric changed.
+
+## Example Query
+
+```text
+Why did Net Revenue for Germany in 2028 change between OP26 and OP27?
+```
+
+## Tasks
+
+```text
+1. Resolve target metric in workbook A.
+2. Resolve target metric in workbook B.
+3. Trace upstream dependencies in both graphs.
+4. Match dependency nodes across workbooks.
+5. Compare values and formulas.
+6. Identify changed upstream drivers.
+7. Rank changed drivers.
+8. Generate explanation.
+```
+
+## Matching Methods
+
+Use two methods.
+
+### Method 1: Same Address Matching
+
+```text
+OP26: Assumptions!D15
+OP27: Assumptions!D15
+```
+
+Good when workbook structure is the same.
+
+### Method 2: Semantic Matching
+
+```text
+OP26: Compliance Rate | Germany | 2028
+OP27: Compliance Rate | Germany | 2028
+```
+
+Good when rows/columns move.
+
+## Output
+
+```json
+{
+  "target_metric": "Net Revenue | Germany | 2028",
+  "old_value": 120.5,
+  "new_value": 105.2,
+  "difference": -15.3,
+  "changed_drivers": [
+    {
+      "resolved_name": "Compliance Rate | Germany | 2028",
+      "old_value": 0.65,
+      "new_value": 0.58,
+      "raw_cell_old": "Assumptions!D15",
+      "raw_cell_new": "Assumptions!D15"
+    }
+  ]
+}
+```
+
+## Deliverable
+
+```text
+Two-workbook metric comparison and variance explanation flow.
+```
+
+---
+
+# Phase 8: LLM Query Planner
+
+## Goal
+
+Convert natural-language questions into structured tool calls.
+
+## Example Input
+
+```text
+Why did Net Revenue for Germany in 2028 change between OP26 and OP27?
+```
+
+## Planner Output
+
+```json
+{
+  "intent": "compare_metric_between_workbooks",
+  "metric": "Net Revenue",
+  "dimensions": {
+    "country": "Germany",
+    "period": "2028"
+  },
+  "workbooks": {
+    "old": "OP26",
+    "new": "OP27"
+  },
+  "required_tools": [
+    "resolve_metric_cell",
+    "get_metric_lineage",
+    "compare_workbooks",
+    "generate_explanation"
+  ]
+}
+```
+
+## Supported Intents
+
+```text
+1. explain_metric_calculation
+2. list_metric_inputs
+3. explain_cell_formula
+4. trace_variable_impact
+5. compare_metric_between_workbooks
+```
+
+## Deliverable
+
+```text
+Structured LLM planner with validated JSON output.
+```
+
+---
+
+# Phase 9: Explanation Generator
+
+## Goal
+
+Convert graph and comparison outputs into clear, auditable answers.
+
+## Rules
+
+Every answer should include:
+
+```text
+1. Target metric
+2. Raw cell reference
+3. Business-readable variable names
+4. Raw supporting cells
+5. Confidence/evidence where relevant
+6. Final explanation
+```
+
+## Example Final Answer
+
+```text
+Target metric:
+Net Revenue | Germany | 2028
+
+Output change:
+OP26: 120.5M
+OP27: 105.2M
+Change: -15.3M
+
+Main changed drivers:
+1. Compliance Rate | Germany | 2028
+   OP26: 65%
+   OP27: 58%
+   Raw cell: Assumptions!D15
+   Evidence: Row label Germany, column label 2028, nearby title Compliance Rate
+
+2. Rebate Rate | Germany | 2028
+   OP26: 20%
+   OP27: 25%
+   Raw cell: Pricing!F8
+   Evidence: Nearby title Rebate Rate
+
+Explanation:
+Net Revenue decreased mainly because compliance reduced effective treated patient volume and rebate increased, reducing revenue after deductions.
+```
+
+## Deliverable
+
+```text
+Business-style answer generator.
+```
+
+---
+
+# Phase 10: UI and Demo Application
+
+## Recommended UI
+
+Use **Streamlit** for V1.
+
+## UI Features
+
+```text
+1. Upload workbook A.
+2. Upload workbook B, optional.
+3. Show indexing summary.
+4. Ask a question in chat.
+5. Display answer.
+6. Show raw cell evidence.
+7. Show dependency path.
+8. Optionally show graph visualization.
+```
+
+## Example UI Flow
+
+```text
+Upload OP26.xlsx and OP27.xlsx
+        ↓
+System preprocesses both
+        ↓
+User asks:
+"Why did Net Revenue for Germany in 2028 change?"
+        ↓
+System returns:
+- Target metric
+- Output difference
+- Changed drivers
+- Raw cells
+- Explanation
+```
+
+## Deliverable
+
+```text
+Working Streamlit demo app.
+```
+
+---
+
+# Recommended Tech Stack
+
+```text
+Language:
+Python
+
+Excel parsing:
+openpyxl
+
+Formula/reference parsing:
+Custom parser first
+Later: formulas / xlcalculator / pycel
+
+Graph:
+networkx
+
+LLM orchestration:
+LangChain or LangGraph
+
+Validation:
+Pydantic
+
+UI:
+Streamlit
+
+Storage:
+JSON files for V1
+SQLite for V2
+
+Backend:
+FastAPI optional
+
+Testing:
+pytest
+
+Deployment:
+Docker optional
+```
+
+---
+
+# Suggested Folder Structure
+
+```text
+spreadsheet-intelligence-agent/
+│
+├── data/
+│   ├── uploads/
+│   ├── indexes/
+│   ├── graphs/
+│   └── resolved_variables/
+│
+├── app/
+│   ├── ingestion/
+│   │   ├── workbook_loader.py
+│   │   ├── workbook_indexer.py
+│   │   └── metadata_extractor.py
+│   │
+│   ├── formulas/
+│   │   ├── formula_extractor.py
+│   │   ├── reference_parser.py
+│   │   └── formula_normalizer.py
+│   │
+│   ├── graph/
+│   │   ├── graph_builder.py
+│   │   ├── lineage_tracer.py
+│   │   └── graph_store.py
+│   │
+│   ├── resolver/
+│   │   ├── metric_resolver.py
+│   │   ├── variable_resolver.py
+│   │   ├── context_collector.py
+│   │   └── llm_resolver.py
+│   │
+│   ├── comparison/
+│   │   ├── workbook_comparator.py
+│   │   └── driver_ranker.py
+│   │
+│   ├── agent/
+│   │   ├── planner.py
+│   │   ├── tools.py
+│   │   └── explanation_generator.py
+│   │
+│   ├── ui/
+│   │   └── streamlit_app.py
+│   │
+│   └── schemas/
+│       └── models.py
+│
+├── tests/
+│   ├── test_reference_parser.py
+│   ├── test_graph_builder.py
+│   ├── test_variable_resolver.py
+│   └── test_comparator.py
+│
+├── requirements.txt
+├── README.md
+└── Dockerfile
+```
+
+---
+
+# Development Roadmap
+
+## V1: Core Formula Lineage System
+
+
+```text
+1. Upload one workbook.
+2. Extract formulas and values.
+3. Parse formula references.
+4. Build dependency graph.
+5. Trace upstream dependencies.
+6. Resolve basic variable names using headers.
+7. Answer “How is this metric calculated?”
+```
+
+---
+
+## V2: Two-Workbook Comparison
+
+Add next.
+
+```text
+1. Upload two workbooks.
+2. Build two graphs.
+3. Resolve same metric in both.
+4. Compare target output.
+5. Compare upstream dependency values.
+6. Explain changed drivers.
+```
+
+This makes the project business-useful.
+
+---
+
+## V3: LLM Agent Layer
+
+Add after deterministic tools work.
+
+```text
+1. LLM query planner.
+2. Tool calling.
+3. Structured JSON outputs.
+4. Explanation generation.
+5. Ambiguity handling.
+```
+
+This makes it agentic.
+
+---
+
+## V4: Advanced Enhancements
+
+Optional later.
+
+```text
+1. Graph visualization.
+2. Semantic matching when rows/columns move.
+3. Export audit report.
+4. SQLite/PostgreSQL storage.
+5. Docker deployment.
+6. Optional formula recalculation.
+```
+
+
+Build order:
+
+1. Excel parser
+2. Formula reference parser
+3. Dependency graph builder
+4. Lineage tracer
+5. Variable resolver
+6. Metric resolver
+7. Two-workbook comparator
+8. LLM planner
+9. Explanation generator
+10. Streamlit UI
