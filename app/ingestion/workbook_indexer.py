@@ -12,6 +12,8 @@ from openpyxl import load_workbook
 from openpyxl.cell.cell import Cell
 from openpyxl.workbook.workbook import Workbook
 
+from app.formulas.reference_parser import parse_references
+
 
 def build_workbook_index(workbook_path: str | Path) -> dict[str, Any]:
     """Read an Excel workbook into a traceable, JSON-safe index.
@@ -19,9 +21,11 @@ def build_workbook_index(workbook_path: str | Path) -> dict[str, Any]:
     Formulas are loaded as their original Excel text. The function does not
     recalculate formula results.
     """
+
     source_path = Path(workbook_path)
     if not source_path.is_file():
         raise FileNotFoundError(f"Workbook not found: {source_path}")
+
     if source_path.suffix.lower() not in {".xlsx", ".xlsm", ".xltx", ".xltm"}:
         raise ValueError("Only modern Excel workbook formats are supported.")
 
@@ -100,6 +104,7 @@ def _index_cell(cell: Cell) -> dict[str, Any]:
         "address": cell.coordinate,
         "value": None if is_formula else _json_value(cell.value),
         "formula": cell.value if is_formula else None,
+        "references": parse_references(cell.value, cell.parent.title) if is_formula else [],
         "data_type": cell.data_type,
         "comment": cell.comment.text if cell.comment else None,
         "fill": _fill_details(cell),
@@ -163,7 +168,6 @@ def _parse_args() -> argparse.Namespace:
         help="JSON output path (default: data/indexes/<workbook name>.json)",
     )
     return parser.parse_args()
-
 
 if __name__ == "__main__":
     args = _parse_args()
