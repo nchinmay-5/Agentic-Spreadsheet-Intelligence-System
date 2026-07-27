@@ -25,11 +25,19 @@ def parse_references(formula: str, current_sheet: str) -> list[str]:
     markers are removed because they do not change a reference's identity.
     Text literals are ignored.
     """
+    return parse_references_with_diagnostics(formula, current_sheet)[0]
+
+
+def parse_references_with_diagnostics(
+    formula: str, current_sheet: str
+) -> tuple[list[str], list[str]]:
+    """Parse references and return non-fatal diagnostics for unsupported formulas."""
     if not isinstance(formula, str) or not formula.startswith("="):
-        return []
+        return [], ["Formula is not a string beginning with '='."]
 
     formula_without_strings = _remove_text_literals(formula)
     references: list[str] = []
+    diagnostics: list[str] = []
     seen: set[str] = set()
 
     for match in _REFERENCE_PATTERN.finditer(formula_without_strings):
@@ -48,7 +56,11 @@ def parse_references(formula: str, current_sheet: str) -> list[str]:
             references.append(reference)
             seen.add(reference)
 
-    return references
+    if "[" in formula_without_strings and "]" in formula_without_strings:
+        diagnostics.append("External workbook references are not supported.")
+    if not references and re.search(r"[A-Za-z]+", formula_without_strings[1:]):
+        diagnostics.append("No A1-style references were recognized.")
+    return references, diagnostics
 
 
 def _remove_text_literals(formula: str) -> str:

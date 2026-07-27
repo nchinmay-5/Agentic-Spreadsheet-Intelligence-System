@@ -4,16 +4,16 @@ from __future__ import annotations
 
 import argparse
 import json
+from uuid import uuid4
 from datetime import date, datetime, time
+from numbers import Integral, Real
 from pathlib import Path
 from typing import Any
 
 from openpyxl import load_workbook
 from openpyxl.cell.cell import Cell
-from openpyxl.workbook.workbook import Workbook
 
-from app.formulas.reference_parser import parse_references
-
+from app.formulas.reference_parser import parse_references_with_diagnostics
 
 def build_workbook_index(workbook_path: str | Path) -> dict[str, Any]:
     """Read an Excel workbook into a traceable, JSON-safe index.
@@ -37,36 +37,54 @@ def build_workbook_index(workbook_path: str | Path) -> dict[str, Any]:
     )
 
     sheet_indexes = [_index_sheet(sheet) for sheet in workbook.worksheets]
-    formula_cells_count = sum(sheet["formula_cells_count"] for sheet in sheet_indexes)
-    value_cells_count = sum(sheet["value_cells_count"] for sheet in sheet_indexes)
-    named_ranges = _extract_named_ranges(workbook)
-
     return {
-        "workbook_id": source_path.stem,
+        "workbook_id": _workbook_id(source_path),
         "source_file": source_path.name,
+        "file_name": source_path.name,
         "sheet_names": workbook.sheetnames,
         "sheets": sheet_indexes,
-        "formula_cells_count": formula_cells_count,
-        "value_cells_count": value_cells_count,
-        "named_ranges_count": len(named_ranges),
-        "named_ranges": named_ranges,
     }
 
 
 def index_workbook_to_file(
-    workbook_path: str | Path, output_path: str | Path | None = None
-) -> Path:
-    """Build an index and write it as formatted JSON, returning its path."""
-    source_path = Path(workbook_path)
-    index = build_workbook_index(source_path)
-    destination = (
-        Path(output_path)
-        if output_path is not None
-        else Path("data") / "indexes" / f"{source_path.stem}.json"
-    )
+    workbook_path: str | Path, indexes_dir: str | Path = Path("data") / "indexes"
+) -> tuple[dict[str, Any], Path]:
+    """Build an index, save it by workbook ID, and return both values."""
+    index = build_workbook_index(workbook_path)
+    return index, save_workbook_index(index, indexes_dir)
+
+def save_workbook_index(index: dict[str, Any], indexes_dir: str | Path) -> Path:
+    """Persist an index as ``<workbook_id>.json`` and return its path."""
+    workbook_id = _validated_workbook_id(index.get("workbook_id"))
+    destination = Path(indexes_dir) / f"{workbook_id}.json"
     destination.parent.mkdir(parents=True, exist_ok=True)
     destination.write_text(json.dumps(index, indent=2, ensure_ascii=False), encoding="utf-8")
     return destination
+
+
+def load_workbook_index(workbook_id: str, indexes_dir: str | Path) -> dict[str, Any]:
+    """Load a persisted index by workbook ID."""
+    safe_workbook_id = _validated_workbook_id(workbook_id)
+    index_path = Path(indexes_dir) / f"{safe_workbook_id}.json"
+    if not index_path.is_file():
+        raise ValueError(f"Workbook not found: {safe_workbook_id}")
+
+    try:
+        index = json.loads(index_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as error:
+        raise ValueError(f"Workbook index is invalid: {safe_workbook_id}") from error
+
+    if not isinstance(index, dict) or index.get("workbook_id") != safe_workbook_id:
+        raise ValueError(f"Workbook index does not match requested ID: {safe_workbook_id}")
+    return index
+
+
+def _validated_workbook_id(workbook_id: Any) -> str:
+    if not isinstance(workbook_id, str) or not workbook_id:
+        raise ValueError("Workbook ID is required.")
+    if Path(workbook_id).name != workbook_id or workbook_id in {".", ".."}:
+        raise ValueError("Invalid workbook ID.")
+    return workbook_id
 
 
 def _index_sheet(sheet: Any) -> dict[str, Any]:
@@ -78,12 +96,6 @@ def _index_sheet(sheet: Any) -> dict[str, Any]:
         for cell in row:
             if cell.value is None:
                 continue
-
-            is_formula = cell.data_type == "f"
-            if is_formula:
-                formula_cells_count += 1
-            else:
-                value_cells_count += 1
             cells.append(_index_cell(cell))
 
     return {
@@ -91,8 +103,6 @@ def _index_sheet(sheet: Any) -> dict[str, Any]:
         "used_range": sheet.calculate_dimension(),
         "max_row": sheet.max_row,
         "max_column": sheet.max_column,
-        "formula_cells_count": formula_cells_count,
-        "value_cells_count": value_cells_count,
         "merged_cells": [str(cell_range) for cell_range in sheet.merged_cells.ranges],
         "cells": cells,
     }
@@ -100,52 +110,26 @@ def _index_sheet(sheet: Any) -> dict[str, Any]:
 
 def _index_cell(cell: Cell) -> dict[str, Any]:
     is_formula = cell.data_type == "f"
+    references, diagnostics = (
+        parse_references_with_diagnostics(cell.value, cell.parent.title)
+        if is_formula
+        else ([], [])
+    )
     return {
         "address": cell.coordinate,
         "value": None if is_formula else _json_value(cell.value),
         "formula": cell.value if is_formula else None,
-        "references": parse_references(cell.value, cell.parent.title) if is_formula else [],
-        "data_type": cell.data_type,
+        "references": references,
+        # "reference_diagnostics": diagnostics,
+        # "data_type": cell.data_type,
         "comment": cell.comment.text if cell.comment else None,
-        "fill": _fill_details(cell),
         "number_format": cell.number_format,
     }
 
 
-def _fill_details(cell: Cell) -> dict[str, Any] | None:
-    fill = cell.fill
-    if fill.fill_type is None:
-        return None
-
-    return {
-        "fill_type": fill.fill_type,
-        "foreground_color": _color_details(fill.fgColor),
-        "background_color": _color_details(fill.bgColor),
-    }
-
-
-def _color_details(color: Any) -> dict[str, Any]:
-    return {
-        "type": color.type,
-        "rgb": color.rgb,
-        "indexed": color.indexed,
-        "theme": color.theme,
-        "tint": color.tint,
-    }
-
-
-def _extract_named_ranges(workbook: Workbook) -> list[dict[str, Any]]:
-    ranges: list[dict[str, Any]] = []
-    for defined_name in workbook.defined_names.values():
-        ranges.append(
-            {
-                "name": defined_name.name,
-                "definition": defined_name.attr_text,
-                "local_sheet_id": defined_name.localSheetId,
-                "hidden": defined_name.hidden,
-            }
-        )
-    return ranges
+def _workbook_id(source_path: Path) -> str:
+    """Return a unique ID for this workbook upload."""
+    return f"{source_path.stem}-{uuid4().hex}"
 
 
 def _json_value(value: Any) -> Any:
@@ -153,7 +137,11 @@ def _json_value(value: Any) -> Any:
         return value.isoformat()
     if isinstance(value, Path):
         return str(value)
-    if isinstance(value, (str, int, float, bool)) or value is None:
+    if isinstance(value, Integral):
+        return int(value)
+    if isinstance(value, Real):
+        return float(value)
+    if isinstance(value, (str, bool)) or value is None:
         return value
     return str(value)
 
@@ -172,4 +160,7 @@ def _parse_args() -> argparse.Namespace:
 if __name__ == "__main__":
     args = _parse_args()
     written_path = index_workbook_to_file(args.workbook, args.output)
+    work_ = Path(r"C:\Users\chinm\OneDrive\Desktop\Q_A_EXCEL\sample_data\Formula_Lineage_Test.xlsx")
+    output_ = Path(r"C:\Users\chinm\OneDrive\Desktop\Q_A_EXCEL\sample_data\test1.txt")
+    written_path = index_workbook_to_file(work_, output_)
     print(f"Workbook index written to {written_path}")
